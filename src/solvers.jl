@@ -1,4 +1,4 @@
-# Copyright 2016 Martin Holters
+# Copyright 2016, 2017 Martin Holters
 # See accompanying license file.
 
 export SimpleSolver, HomotopySolver, CachingSolver
@@ -39,45 +39,70 @@ calc_Jp!(nleq::ParametricNonLinEq) = nleq.calc_Jp(nleq.scratch, nleq.Jp)
 evaluate!(nleq::ParametricNonLinEq, z) =
     nleq.func(nleq.res, nleq.J, nleq.scratch, z)
 
-immutable LinearSolver
+immutable LinearSolver{N}
     factors::Matrix{Float64}
     ipiv::Vector{Base.LinAlg.BlasInt}
     info::typeof(Ref{Base.LinAlg.BlasInt}(0))
-    function LinearSolver(n::Int)
-        new(zeros(n, n), zeros(Base.LinAlg.BlasInt, n), Ref{Base.LinAlg.BlasInt}(0))
+    function LinearSolver()
+        new(zeros(N, N), zeros(Base.LinAlg.BlasInt, N), Ref{Base.LinAlg.BlasInt}(0))
     end
 end
 
-function setlhs!(solver::LinearSolver, A::Matrix{Float64})
-    m, n = size(solver.factors)
-    if (m, n) ≠ size(A)
-        throw(DimensionMismatch("matrix has size $(size(A)), but must have size $(size(solver.factors))"))
+LinearSolver(n::Int) = LinearSolver{n}()
+
+@inline function _check_lhs_dims{N}(::LinearSolver{N}, A::Matrix{Float64})
+    if (N, N) ≠ size(A)
+        throw(DimensionMismatch("matrix has size $(size(A)), but must have size $((N, N))"))
     end
+end
+
+@inline function _check_solve_dims{N}(::LinearSolver{N}, x::Vector{Float64}, b::Vector{Float64})
+    if N ≠ length(x)
+        throw(DimensionMismatch("x has length $(length(x)), but needs $N"))
+    end
+    if x !== b
+        if N ≠ length(b)
+            throw(DimensionMismatch("b has length $(length(b)), but needs $N"))
+        end
+    end
+end
+
+function setlhs!(solver::LinearSolver{0}, A::Matrix{Float64})
+    _check_lhs_dims(solver, A)
+    return true
+end
+
+function setlhs!(solver::LinearSolver{1}, A::Matrix{Float64})
+    _check_lhs_dims(solver, A)
     copy!(solver.factors, A)
-    lda  = max(1, m)
+    solver.ipiv[1] = 1
+    return A[1,1] != 0.0
+end
+
+function setlhs!{N}(solver::LinearSolver{N}, A::Matrix{Float64})
+    _check_lhs_dims(solver, A)
+    copy!(solver.factors, A)
     ccall((Compat.@blasfunc(dgetrf_), Base.LinAlg.LAPACK.liblapack), Void,
           (Ptr{Base.LinAlg.BlasInt}, Ptr{Base.LinAlg.BlasInt}, Ptr{Float64},
            Ptr{Base.LinAlg.BlasInt}, Ptr{Base.LinAlg.BlasInt}, Ptr{Base.LinAlg.BlasInt}),
-          &m, &n, solver.factors, &lda, solver.ipiv, solver.info)
+          &N, &N, solver.factors, &N, solver.ipiv, solver.info)
     return solver.info[] == 0
 end
 
-function solve!(solver::LinearSolver, x::Vector{Float64}, b::Vector{Float64})
-    n = size(solver.factors, 2)
-    if n ≠ length(x)
-        throw(DimensionMismatch("x has length $(length(x)), but needs $n"))
-    end
+function solve!(solver::LinearSolver{0}, x::Vector{Float64}, b::Vector{Float64})
+    _check_solve_dims(solver, x, b)
+end
+
+function solve!{N}(solver::LinearSolver{N}, x::Vector{Float64}, b::Vector{Float64})
+    _check_solve_dims(solver, x, b)
     if x !== b
-        if n ≠ length(b)
-            throw(DimensionMismatch("b has length $(length(b)), but needs $n"))
-        end
         copy!(x, b)
     end
     Base.LinAlg.chkstride1(solver.factors, x, solver.ipiv)
     ccall((Compat.@blasfunc(dgetrs_), Base.LinAlg.LAPACK.liblapack), Void,
           (Ptr{UInt8}, Ptr{Base.LinAlg.BlasInt}, Ptr{Base.LinAlg.BlasInt}, Ptr{Float64}, Ptr{Base.LinAlg.BlasInt},
            Ptr{Base.LinAlg.BlasInt}, Ptr{Float64}, Ptr{Base.LinAlg.BlasInt}, Ptr{Base.LinAlg.BlasInt}),
-          &'N', &n, &1, solver.factors, &max(1,stride(solver.factors,2)), solver.ipiv, x, &max(1,stride(x,2)), solver.info)
+          &'N', &N, &1, solver.factors, &max(1,stride(solver.factors,2)), solver.ipiv, x, &max(1,stride(x,2)), solver.info)
     if solver.info[] ≠ 0
         throw(Base.LinAlg.LAPACKException(solver.info[]))
     end
@@ -100,14 +125,14 @@ the last solution found (or another solution provided externally) using the
 available Jacobians. Due to the missing global convergence, the `SimpleSolver`
 is rarely useful as such.
 """
-type SimpleSolver{NLEQ<:ParametricNonLinEq}
+type SimpleSolver{NLEQ<:ParametricNonLinEq,NN}
     nleq::NLEQ
     z::Vector{Float64}
-    linsolver::LinearSolver
+    linsolver::LinearSolver{NN}
     last_z::Vector{Float64}
     last_p::Vector{Float64}
     last_Jp::Matrix{Float64}
-    last_linsolver::LinearSolver
+    last_linsolver::LinearSolver{NN}
     iters::Int
     ressumabs2::Float64
     tol::Float64
@@ -131,7 +156,7 @@ type SimpleSolver{NLEQ<:ParametricNonLinEq}
 end
 SimpleSolver{NLEQ<:ParametricNonLinEq}(nleq::NLEQ, initial_p::Vector{Float64},
                                        initial_z::Vector{Float64}) =
-    SimpleSolver{NLEQ}(nleq, initial_p, initial_z)
+    SimpleSolver{NLEQ,nn(nleq)}(nleq, initial_p, initial_z)
 
 set_resabs2tol!(solver::SimpleSolver, tol) = solver.tol = tol
 
