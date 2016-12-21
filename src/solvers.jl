@@ -74,9 +74,8 @@ end
 
 function setlhs!(solver::LinearSolver{1}, A::Matrix{Float64})
     _check_lhs_dims(solver, A)
-    copy!(solver.factors, A)
-    solver.ipiv[1] = 1
-    return A[1,1] != 0.0
+    solver.factors[1,1] = 1.0 / A[1,1]
+    return isfinite(solver.factors[1,1])
 end
 
 function setlhs!{N}(solver::LinearSolver{N}, A::Matrix{Float64})
@@ -91,6 +90,11 @@ end
 
 function solve!(solver::LinearSolver{0}, x::Vector{Float64}, b::Vector{Float64})
     _check_solve_dims(solver, x, b)
+end
+
+function solve!(solver::LinearSolver{1}, x::Vector{Float64}, b::Vector{Float64})
+    _check_solve_dims(solver, x, b)
+    x[1] = solver.factors[1,1] * b[1]
 end
 
 function solve!{N}(solver::LinearSolver{N}, x::Vector{Float64}, b::Vector{Float64})
